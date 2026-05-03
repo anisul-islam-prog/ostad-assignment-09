@@ -32,7 +32,7 @@ import { ref, onMounted } from "vue";
 import axios from "axios";
 
 // Nginx proxies /api to backend ALB, so we use relative URLs
-const API = "/api/";
+const API = "/api";
 // For testing locally        
 // const API = "http://localhost:8080";
 
