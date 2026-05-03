@@ -6,7 +6,7 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  S3_BUCKET: ostad-assignment-09-artifacts-2a4b240b   # <-- REPLACE with your actual bucket
+  S3_BUCKET: ostad-assignment-09-artifacts-2a4b240b   # <-- REPLACE with your bucket
 
 jobs:
   build-backend:
@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: backend   # <-- ALL run steps now run in backend/
+        working-directory: backend
 
     steps:
       - name: Checkout Code
@@ -25,7 +25,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: backend/package-lock.json   # <-- TELL IT WHERE TO LOOK
+          cache-dependency-path: backend/package-lock.json
 
       - name: Install Dependencies
         run: npm ci
@@ -47,7 +47,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Upload to S3
-        working-directory: ${{ github.workspace }}   # <-- Back to repo root for S3 upload
+        working-directory: ${{ github.workspace }}
         run: |
           aws s3 cp release/backend.tar.gz s3://${{ env.S3_BUCKET }}/releases/backend-${{ github.sha }}.tar.gz
 
@@ -96,28 +96,44 @@ jobs:
             sleep 30
           done
 
-      - name: Verify Deployment
+      - name: Verify Deployment via Frontend
         run: |
-          ALB_DNS=$(aws elbv2 describe-load-balancers \
-            --names ostad-assignment-09-backend-alb \
+          FRONTEND_DNS=$(aws elbv2 describe-load-balancers \
+            --names ostad-assignment-09-frontend-alb \
             --query 'LoadBalancers[0].DNSName' \
             --output text)
-          echo "ALB DNS: $ALB_DNS"
-          sleep 60
+          
+          echo "Frontend ALB: $FRONTEND_DNS"
+          echo "Waiting for health checks..."
+          sleep 90
+          
           RETRIES=0
           MAX_RETRIES=10
+          
           while [ $RETRIES -lt $MAX_RETRIES ]; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$ALB_DNS/health || echo "000")
-            if [ "$STATUS" == "200" ]; then
-              echo "✅ Health check passed!"
-              curl -s http://$ALB_DNS/api/deployment-info
-              break
+            # Check frontend loads
+            FRONT_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$FRONTEND_DNS/ || echo "000")
+            echo "Frontend status: $FRONT_STATUS"
+            
+            if [ "$FRONT_STATUS" == "200" ]; then
+              echo "✅ Frontend is responding!"
+              
+              # Check deployment info through frontend proxy
+              DEPLOY_INFO=$(curl -s http://$FRONTEND_DNS/api/deployment-info || echo "failed")
+              echo "Deployment Info: $DEPLOY_INFO"
+              
+              if echo "$DEPLOY_INFO" | grep -q "version"; then
+                echo "✅ Deployment verified successfully!"
+                break
+              fi
             fi
-            echo "Health check returned $STATUS, retrying in 15s..."
+            
+            echo "Retrying in 15s..."
             RETRIES=$((RETRIES+1))
             sleep 15
           done
+          
           if [ $RETRIES -eq $MAX_RETRIES ]; then
-            echo "❌ Health check failed after $MAX_RETRIES attempts"
+            echo "❌ Verification failed"
             exit 1
           fi

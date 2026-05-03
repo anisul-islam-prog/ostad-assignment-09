@@ -16,7 +16,7 @@ const pool = new Pool({
 });
 
 // Health check for ALB
-app.get("/health", async (req, res) => {
+app.get("/api/health", async (req, res) => {
   try {
     const start = Date.now();
     await pool.query("SELECT 1");
