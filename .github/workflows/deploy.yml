@@ -1,4 +1,4 @@
-name: CI/CD — Deploy to AWS
+name: CI/CD — Deploy Frontend & Backend to AWS
 
 on:
   push:
@@ -6,9 +6,58 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  S3_BUCKET: ostad-assignment-09-artifacts-6a393ea9   # <-- REPLACE with your bucket
+  S3_BUCKET: ostad-assignment-09-artifacts-6a393ea9
+  BACKEND_ASG_NAME: ostad-assignment-09-backend-asg
+  FRONTEND_INSTANCE_NAME: ostad-assignment-09-frontend
 
 jobs:
+  # ==========================================
+  # JOB 1: BUILD FRONTEND
+  # ==========================================
+  build-frontend:
+    name: Build Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build for Production
+        run: npm run build
+
+      - name: Package Frontend
+        working-directory: ${{ github.workspace }}
+        run: |
+          mkdir -p release
+          tar -czf release/frontend-${{ github.sha }}.tar.gz -C frontend/dist .
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload Frontend to S3
+        run: |
+          aws s3 cp release/frontend-${{ github.sha }}.tar.gz s3://${{ env.S3_BUCKET }}/releases/
+
+  # ==========================================
+  # JOB 2: BUILD BACKEND
+  # ==========================================
   build-backend:
     name: Build Backend
     runs-on: ubuntu-latest
@@ -33,11 +82,11 @@ jobs:
       - name: Run Tests
         run: npm test || echo "No tests yet, skipping"
 
-      - name: Build Artifact
+      - name: Package Backend
+        working-directory: ${{ github.workspace }}
         run: |
-          npm ci --production
-          mkdir -p ../release
-          tar -czf ../release/backend.tar.gz .
+          mkdir -p release
+          tar -czf release/backend-${{ github.sha }}.tar.gz -C backend .
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -46,13 +95,71 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Upload to S3
-        working-directory: ${{ github.workspace }}
+      - name: Upload Backend to S3
         run: |
-          aws s3 cp release/backend.tar.gz s3://${{ env.S3_BUCKET }}/releases/backend-${{ github.sha }}.tar.gz
+          aws s3 cp release/backend-${{ github.sha }}.tar.gz s3://${{ env.S3_BUCKET }}/releases/
 
+  # ==========================================
+  # JOB 3: DEPLOY FRONTEND (SSH into EC2)
+  # ==========================================
+  deploy-frontend:
+    name: Deploy Frontend to EC2
+    needs: build-frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get Frontend Instance IP
+        id: get-ip
+        run: |
+          INSTANCE_IP=$(aws ec2 describe-instances             --filters "Name=tag:Name,Values=${{ env.FRONTEND_INSTANCE_NAME }}" "Name=instance-state-name,Values=running"             --query 'Reservations[0].Instances[0].PublicIpAddress'             --output text)
+          echo "instance_ip=$INSTANCE_IP" >> $GITHUB_OUTPUT
+          echo "Frontend IP: $INSTANCE_IP"
+
+      - name: Setup SSH Key
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" > deploy_key.pem
+          chmod 600 deploy_key.pem
+
+      - name: Deploy Frontend via SSH
+        run: |
+          INSTANCE_IP="${{ steps.get-ip.outputs.instance_ip }}"
+          ARTIFACT_URL="s3://${{ env.S3_BUCKET }}/releases/frontend-${{ github.sha }}.tar.gz"
+
+          ssh -o StrictHostKeyChecking=no -i deploy_key.pem ec2-user@$INSTANCE_IP << EOF
+            set -e
+            echo "=== Deploying Frontend ==="
+
+            # Download new build
+            aws s3 cp $ARTIFACT_URL /tmp/frontend-new.tar.gz
+
+            # Backup current
+            sudo cp -r /usr/share/nginx/html /usr/share/nginx/html-backup-$(date +%s)
+
+            # Clear and extract new build
+            sudo rm -rf /usr/share/nginx/html/*
+            sudo tar -xzf /tmp/frontend-new.tar.gz -C /usr/share/nginx/html/
+
+            # Restart Nginx
+            sudo systemctl restart nginx
+            sudo systemctl status nginx --no-pager
+
+            # Verify
+            curl -s -o /dev/null -w "%{http_code}" http://localhost/nginx-health
+            echo " ✅ Frontend deployed"
+          EOF
+
+  # ==========================================
+  # JOB 4: DEPLOY BACKEND (ASG Instance Refresh)
+  # ==========================================
   deploy-backend:
-    name: Deploy to ASG
+    name: Deploy Backend to ASG
     needs: build-backend
     runs-on: ubuntu-latest
 
@@ -66,73 +173,87 @@ jobs:
 
       - name: Trigger ASG Instance Refresh
         run: |
-          aws autoscaling start-instance-refresh \
-            --auto-scaling-group-name ${{ secrets.BACKEND_ASG_NAME }} \
-            --preferences "MinHealthyPercentage=50,InstanceWarmup=120" \
-            --strategy Rolling
+          aws autoscaling start-instance-refresh             --auto-scaling-group-name ${{ env.BACKEND_ASG_NAME }}             --preferences "MinHealthyPercentage=50,InstanceWarmup=120"             --strategy Rolling
 
-      - name: Wait for Deployment
+      - name: Wait for Instance Refresh
         run: |
           sleep 30
-          REFRESH_ID=$(aws autoscaling describe-instance-refreshes \
-            --auto-scaling-group-name ${{ secrets.BACKEND_ASG_NAME }} \
-            --query 'InstanceRefreshes[0].InstanceRefreshId' \
-            --output text)
+          REFRESH_ID=$(aws autoscaling describe-instance-refreshes             --auto-scaling-group-name ${{ env.BACKEND_ASG_NAME }}             --query 'InstanceRefreshes[0].InstanceRefreshId'             --output text)
           echo "Refresh ID: $REFRESH_ID"
+
           while true; do
-            STATUS=$(aws autoscaling describe-instance-refreshes \
-              --auto-scaling-group-name ${{ secrets.BACKEND_ASG_NAME }} \
-              --instance-refresh-ids $REFRESH_ID \
-              --query 'InstanceRefreshes[0].Status' \
-              --output text)
+            STATUS=$(aws autoscaling describe-instance-refreshes               --auto-scaling-group-name ${{ env.BACKEND_ASG_NAME }}               --instance-refresh-ids $REFRESH_ID               --query 'InstanceRefreshes[0].Status'               --output text)
             echo "Status: $STATUS"
+
             if [ "$STATUS" == "Successful" ]; then
-              echo "✅ Instance refresh complete!"
+              echo "✅ Backend instance refresh complete!"
               break
             elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ]; then
-              echo "❌ Instance refresh failed!"
+              echo "❌ Backend instance refresh failed!"
               exit 1
             fi
             sleep 30
           done
 
-      - name: Verify Deployment via Frontend
+  # ==========================================
+  # JOB 5: VERIFY DEPLOYMENT (via Frontend ALB)
+  # ==========================================
+  verify-deployment:
+    name: Verify Deployment
+    needs: [deploy-frontend, deploy-backend]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get Frontend ALB DNS
+        id: get-alb
         run: |
-          FRONTEND_DNS=$(aws elbv2 describe-load-balancers \
-            --names ostad-assignment-09-frontend-alb \
-            --query 'LoadBalancers[0].DNSName' \
-            --output text)
-          
+          FRONTEND_DNS=$(aws elbv2 describe-load-balancers             --names ostad-assignment-09-frontend-alb             --query 'LoadBalancers[0].DNSName'             --output text)
+          echo "frontend_dns=$FRONTEND_DNS" >> $GITHUB_OUTPUT
           echo "Frontend ALB: $FRONTEND_DNS"
-          echo "Waiting for health checks..."
+
+      - name: Wait and Verify
+        run: |
+          FRONTEND_DNS="${{ steps.get-alb.outputs.frontend_dns }}"
+          echo "Waiting for services to stabilize..."
           sleep 90
-          
+
           RETRIES=0
           MAX_RETRIES=10
-          
+
           while [ $RETRIES -lt $MAX_RETRIES ]; do
             # Check frontend loads
             FRONT_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$FRONTEND_DNS/ || echo "000")
             echo "Frontend status: $FRONT_STATUS"
-            
+
             if [ "$FRONT_STATUS" == "200" ]; then
               echo "✅ Frontend is responding!"
-              
+
               # Check deployment info through frontend proxy
               DEPLOY_INFO=$(curl -s http://$FRONTEND_DNS/api/deployment-info || echo "failed")
               echo "Deployment Info: $DEPLOY_INFO"
-              
+
+              # Check health
+              HEALTH=$(curl -s http://$FRONTEND_DNS/api/health || echo "failed")
+              echo "Health: $HEALTH"
+
               if echo "$DEPLOY_INFO" | grep -q "version"; then
-                echo "✅ Deployment verified successfully!"
+                echo "✅ Full deployment verified successfully!"
                 break
               fi
             fi
-            
+
             echo "Retrying in 15s..."
             RETRIES=$((RETRIES+1))
             sleep 15
           done
-          
+
           if [ $RETRIES -eq $MAX_RETRIES ]; then
             echo "❌ Verification failed"
             exit 1
