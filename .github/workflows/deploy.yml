@@ -39,10 +39,11 @@ jobs:
         run: npm run build
 
       - name: Package Frontend
-        working-directory: ${{ github.workspace }}
         run: |
-          mkdir -p release
-          tar -czf release/frontend-${{ github.sha }}.tar.gz -C frontend/dist .
+          mkdir -p ${{ github.workspace }}/release
+          cd frontend
+          npm run build
+          tar -czf ${{ github.workspace }}/release/frontend-${{ github.sha }}.tar.gz -C dist .
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -53,7 +54,7 @@ jobs:
 
       - name: Upload Frontend to S3
         run: |
-          aws s3 cp release/frontend-${{ github.sha }}.tar.gz s3://${{ env.S3_BUCKET }}/releases/
+          aws s3 cp ${{ github.workspace }}/release/frontend-${{ github.sha }}.tar.gz s3://${{ env.S3_BUCKET }}/releases/
 
   # ==========================================
   # JOB 2: BUILD BACKEND
@@ -83,10 +84,11 @@ jobs:
         run: npm test || echo "No tests yet, skipping"
 
       - name: Package Backend
-        working-directory: ${{ github.workspace }}
         run: |
-          mkdir -p release
-          tar -czf release/backend-${{ github.sha }}.tar.gz -C backend .
+          mkdir -p ${{ github.workspace }}/release
+          cd backend
+          npm ci --production
+          tar -czf ${{ github.workspace }}/release/backend-${{ github.sha }}.tar.gz .
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -97,7 +99,7 @@ jobs:
 
       - name: Upload Backend to S3
         run: |
-          aws s3 cp release/backend-${{ github.sha }}.tar.gz s3://${{ env.S3_BUCKET }}/releases/
+          aws s3 cp ${{ github.workspace }}/release/backend-${{ github.sha }}.tar.gz s3://${{ env.S3_BUCKET }}/releases/
 
   # ==========================================
   # JOB 3: DEPLOY FRONTEND (SSH into EC2)
