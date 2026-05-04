@@ -130,25 +130,35 @@ jobs:
         run: |
           INSTANCE_IP="${{ steps.get-ip.outputs.instance_ip }}"
           ARTIFACT_URL="s3://${{ env.S3_BUCKET }}/releases/frontend-${{ github.sha }}.tar.gz"
-
+          
+          # Export AWS credentials for the SSH session
+          export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
+          export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+          export AWS_REGION="${{ env.AWS_REGION }}"
+          
           ssh -o StrictHostKeyChecking=no -i deploy_key.pem ec2-user@$INSTANCE_IP << EOF
             set -e
             echo "=== Deploying Frontend ==="
-
+            
+            # Configure AWS CLI with credentials
+            export AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID"
+            export AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY"
+            export AWS_REGION="$AWS_REGION"
+            
             # Download new build
             aws s3 cp $ARTIFACT_URL /tmp/frontend-new.tar.gz
-
+            
             # Backup current
-            sudo cp -r /usr/share/nginx/html /usr/share/nginx/html-backup-$(date +%s)
-
+            sudo cp -r /usr/share/nginx/html /usr/share/nginx/html-backup-\$(date +%s)
+            
             # Clear and extract new build
             sudo rm -rf /usr/share/nginx/html/*
             sudo tar -xzf /tmp/frontend-new.tar.gz -C /usr/share/nginx/html/
-
+            
             # Restart Nginx
             sudo systemctl restart nginx
             sudo systemctl status nginx --no-pager
-
+            
             # Verify
             curl -s -o /dev/null -w "%{http_code}" http://localhost/nginx-health
             echo " ✅ Frontend deployed"
