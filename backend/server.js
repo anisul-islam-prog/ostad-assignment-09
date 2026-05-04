@@ -39,7 +39,7 @@ app.get("/api/health", async (req, res) => {
 
 app.get("/api/deployment-info", (req, res) => {
   res.json({
-    version: process.env.APP_VERSION || "2.1.0",
+    version: process.env.APP_VERSION || "1.1.0",
     commit: process.env.GIT_COMMIT || "unknown",
     deployedAt: process.env.DEPLOYMENT_TIME || new Date().toISOString(),
     environment: process.env.NODE_ENV || "production",

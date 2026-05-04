@@ -1,6 +1,6 @@
 {
   "name": "ostad-backend",
-  "version": "1.0.0",
+  "version": "2.1.1",
   "description": "Ostad Assignment 09 Backend",
   "main": "server.js",
   "scripts": {
