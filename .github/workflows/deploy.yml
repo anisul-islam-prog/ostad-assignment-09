@@ -41,8 +41,6 @@ jobs:
       - name: Package Frontend
         run: |
           mkdir -p ${{ github.workspace }}/release
-          cd frontend
-          npm run build
           tar -czf ${{ github.workspace }}/release/frontend-${{ github.sha }}.tar.gz -C dist .
 
       - name: Configure AWS Credentials
@@ -86,7 +84,6 @@ jobs:
       - name: Package Backend
         run: |
           mkdir -p ${{ github.workspace }}/release
-          cd backend
           npm ci --production
           tar -czf ${{ github.workspace }}/release/backend-${{ github.sha }}.tar.gz .
 
