@@ -6,7 +6,7 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  S3_BUCKET: ostad-assignment-09-artifacts-6a393ea9
+  S3_BUCKET: ostad-assignment-09-artifacts-279c4015
   BACKEND_ASG_NAME: ostad-assignment-09-backend-asg
   FRONTEND_INSTANCE_NAME: ostad-assignment-09-frontend
 
